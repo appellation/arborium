@@ -19,6 +19,8 @@ export interface Utf8Span {
   end: number;
   /** The capture name (e.g., "keyword", "string", "comment") */
   capture: string;
+  /** Pattern index for deduplication (higher = higher priority) */
+  pattern_index: number;
 }
 
 /**
@@ -221,10 +223,10 @@ export interface ArboriumConfig {
   resolveHostJs?(args: ResolveArgs): MaybePromise<unknown>;
   /** Custom host resolution for WASM */
   resolveHostWasm?(args: ResolveArgs): MaybePromise<Response | BufferSource | WebAssembly.Module>;
-  /** Custom grammar resolution for JS */
-  resolveJs?(args: LanguageResolveArgs): MaybePromise<unknown>;
-  /** Custom grammar resolution for WASM */
+  /** Custom grammar resolution for language WASM files */
   resolveWasm?(args: LanguageResolveArgs): MaybePromise<Response | BufferSource | WebAssembly.Module>;
+  /** Custom grammar resolution for query .scm text files */
+  resolveText?(args: LanguageResolveArgs): MaybePromise<string>;
 }
 
 /** Global config set before script loads */

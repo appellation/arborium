@@ -4,6 +4,9 @@
     "url": "https://github.com/bearcove/arborium/issues"
   },
   "description": "High-performance syntax highlighting powered by tree-sitter and WebAssembly",
+  "dependencies": {
+    "web-tree-sitter": "0.26.6"
+  },
   "devDependencies": {
     "typescript": "^5.7.2",
     "vite": "^7.2.6",
@@ -24,6 +27,9 @@
     },
     "./arborium_host_bg.wasm": {
       "import": "./dist/arborium_host_bg.wasm"
+    },
+    "./web-tree-sitter.wasm": {
+      "import": "./dist/web-tree-sitter.wasm"
     },
     "./themes/alabaster.css": "./dist/themes/alabaster.css",
     "./themes/ayu-dark.css": "./dist/themes/ayu-dark.css",
@@ -85,7 +91,7 @@
     "build": "vite build && vite build --config vite.config.iife.ts && npm run copy:host",
     "build:esm": "vite build",
     "build:iife": "vite build --config vite.config.iife.ts",
-    "copy:host": "cp ../../demo/pkg/arborium_host.js ../../demo/pkg/arborium_host.d.ts ../../demo/pkg/arborium_host*.wasm dist/",
+    "copy:host": "cp ../../demo/pkg/arborium_host.js ../../demo/pkg/arborium_host.d.ts ../../demo/pkg/arborium_host*.wasm dist/ && cp node_modules/web-tree-sitter/web-tree-sitter.wasm dist/",
     "dev": "vite",
     "gen:manifest": "cd ../.. && cargo xtask gen-manifest",
     "prepublishOnly": "npm run gen:manifest && npm run build && test -f dist/arborium.iife.js || (echo 'ERROR: dist/arborium.iife.js missing!' && exit 1)",

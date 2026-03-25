@@ -1,17 +1,14 @@
 {
   "name": "@arborium/<%= grammar_id %>",
   "version": "<%= version %>",
-  "description": "Syntax highlighting for <%= grammar_name %>, powered by WebAssembly",
-  "type": "module",
-  "main": "./grammar.js",
-  "module": "./grammar.js",
+  "description": "Tree-sitter grammar for <%= grammar_name %>, used by arborium syntax highlighting",
   "exports": {
-    ".": "./grammar.js",
-    "./grammar.js": "./grammar.js",
-    "./grammar_bg.wasm": "./grammar_bg.wasm"
+    "./language.wasm": "./language.wasm",
+    "./highlights.scm": "./highlights.scm",
+    "./injections.scm": "./injections.scm",
+    "./locals.scm": "./locals.scm"
   },
-  "files": ["grammar.js", "grammar_bg.wasm"],
-  "sideEffects": false,
+  "files": ["language.wasm", "highlights.scm", "injections.scm", "locals.scm"],
   "keywords": [
     "arborium",
     "syntax-highlighting",
@@ -33,9 +30,6 @@
   "funding": {
     "type": "github",
     "url": "https://github.com/sponsors/fasterthanlime"
-  },
-  "engines": {
-    "node": ">=18"
   },
   "publishConfig": {
     "access": "public"

@@ -44,5 +44,8 @@ export default defineConfig({
     target: 'es2022',
     minify: 'esbuild',
     sourcemap: true,
+    rollupOptions: {
+      external: ['web-tree-sitter'],
+    },
   },
 });

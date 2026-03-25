@@ -30,8 +30,8 @@ pub enum Tool {
 /// Tools needed for `cargo xtask gen` (generation).
 pub const GEN_TOOLS: &[Tool] = &[Tool::TreeSitter, Tool::Git];
 
-/// Tools needed for `cargo xtask build` (WASM plugins).
-pub const PLUGIN_TOOLS: &[Tool] = &[Tool::WasmBindgen, Tool::WasmOpt];
+/// Tools needed for `cargo xtask build` (WASM language files).
+pub const PLUGIN_TOOLS: &[Tool] = &[Tool::TreeSitter, Tool::WasmOpt];
 
 /// Tools needed for `cargo xtask serve` (demo assets fetch).
 pub const SERVE_TOOLS: &[Tool] = &[Tool::Curl];

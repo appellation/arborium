@@ -4,8 +4,8 @@ set -euo pipefail
 echo "Fetching plugins.json..."
 plugins_json=$(curl -sS https://arborium.bearcove.eu/plugins.json)
 
-# Extract all cdn_js and cdn_wasm URLs
-urls=$(echo "$plugins_json" | jq -r '.entries[] | .cdn_js, .cdn_wasm')
+# Extract all cdn_wasm URLs
+urls=$(echo "$plugins_json" | jq -r '.entries[] | .cdn_wasm')
 
 total=$(echo "$urls" | wc -l | tr -d ' ')
 current=0

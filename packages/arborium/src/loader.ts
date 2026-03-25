@@ -4,8 +4,9 @@
  * Architecture:
  * 1. Grammar registry is bundled at build time (no network request needed in production)
  *    - Can be overridden via pluginsUrl config for local development
- * 2. Load grammar wasm-bindgen modules on demand from @arborium/<lang> packages
- * 3. Parse and highlight using the grammar's tree-sitter parser
+ * 2. Load standard tree-sitter language .wasm files on demand from @arborium/<lang> packages
+ * 3. Use web-tree-sitter as shared runtime for parsing and query execution
+ * 4. arborium-host (Rust WASM) handles injection recursion and HTML rendering
  */
 
 import type {
@@ -17,6 +18,24 @@ import type {
 } from "./types.js";
 import { availableLanguages, pluginVersion } from "./plugins-manifest.js";
 import { escapeHtml } from "./utils.js";
+import { concatenateQueries, buildQueryConfig, executeQuery, convertToUtf16, type QueryConfig } from "./query-executor.js";
+import { Parser, Query as QueryClass, Language, type Query, type Tree } from "web-tree-sitter";
+
+/** Build a QueryConfig from query strings and a language */
+function makeQueryConfig(
+  language: Language,
+  highlightsQuery: string,
+  injectionsQuery: string,
+  localsQuery: string,
+): QueryConfig {
+  const { source, localsOffset, highlightsOffset } = concatenateQueries(
+    highlightsQuery,
+    injectionsQuery,
+    localsQuery,
+  );
+  const query = new QueryClass(language, source);
+  return buildQueryConfig(query, localsOffset, highlightsOffset);
+}
 
 // Default config
 export const defaultConfig: Required<ArboriumConfig> = {
@@ -30,8 +49,8 @@ export const defaultConfig: Required<ArboriumConfig> = {
   logger: console,
   resolveHostJs: ({ baseUrl, path }) => import(/* @vite-ignore */ `${baseUrl}/${path}`),
   resolveHostWasm: ({ baseUrl, path }) => fetch(`${baseUrl}/${path}`),
-  resolveJs: ({ baseUrl, path }) => import(/* @vite-ignore */ `${baseUrl}/${path}`),
   resolveWasm: ({ baseUrl, path }) => fetch(`${baseUrl}/${path}`),
+  resolveText: ({ baseUrl, path }) => fetch(`${baseUrl}/${path}`).then((r) => r.ok ? r.text() : ""),
 };
 
 // Rust host module (loaded on demand)
@@ -54,11 +73,26 @@ const grammarLoadPromises = new Map<string, Promise<GrammarPlugin | null>>();
 // Languages we know are available (bundled at build time)
 const knownLanguages: Set<string> = new Set(availableLanguages);
 
+// web-tree-sitter initialization
+let parserInitPromise: Promise<void> | null = null;
+
+/** Initialize web-tree-sitter runtime (once) */
+async function ensureParserInit(config: Required<ArboriumConfig>): Promise<void> {
+  if (!parserInitPromise) {
+    parserInitPromise = Parser.init({
+      locateFile: () => {
+        const hostUrl = getHostUrl(config);
+        return `${hostUrl}/web-tree-sitter.wasm`;
+      },
+    });
+  }
+  return parserInitPromise;
+}
+
 // For local development: can override with pluginsUrl to load from dev server
 interface LocalManifest {
   entries: Array<{
     language: string;
-    local_js: string;
     local_wasm: string;
   }>;
 }
@@ -94,8 +128,8 @@ function getGrammarBaseUrl(language: string, config: Required<ArboriumConfig>): 
   if (localManifest) {
     const entry = localManifest.entries.find((e) => e.language === language);
     if (entry) {
-      // Extract base URL from local_js path (e.g., "/langs/group-hazel/python/npm/grammar.js" -> "/langs/group-hazel/python/npm")
-      return entry.local_js.substring(0, entry.local_js.lastIndexOf("/"));
+      // Extract base URL from local_wasm path (e.g., "/langs/group-hazel/python/npm/language.wasm" -> "/langs/group-hazel/python/npm")
+      return entry.local_wasm.substring(0, entry.local_wasm.lastIndexOf("/"));
     }
   }
 
@@ -119,33 +153,32 @@ type MaybePromise<T> = Promise<T> | T;
 /** Source of the WASM module for wasm-bindgen */
 type WbgInitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
-/** wasm-bindgen plugin module interface */
-interface WasmBindgenPlugin {
+/** wasm-bindgen host module interface (for arborium-host only) */
+interface WasmBindgenHost {
   default: (
     module_or_path?: { module_or_path: MaybePromise<WbgInitInput> } | undefined,
-    // deprecated: | MaybePromise<WbgInitInput>,
   ) => Promise<void>;
-  language_id: () => string;
-  injection_languages: () => string[];
-  create_session: () => number;
-  free_session: (session: number) => void;
-  set_text: (session: number, text: string) => void;
-  /** Parse and return UTF-8 byte offsets (for Rust host) */
-  parse: (session: number) => Utf8ParseResult;
-  /** Parse and return UTF-16 code unit indices (for JavaScript) */
-  parse_utf16: (session: number) => Utf16ParseResult;
-  cancel: (session: number) => void;
+  highlight(language: string, source: string): Promise<string>;
+  isLanguageAvailable(language: string): boolean;
 }
 
-/** A loaded grammar plugin */
+/** A loaded grammar plugin backed by web-tree-sitter */
 interface GrammarPlugin {
   languageId: string;
   injectionLanguages: string[];
-  module: WasmBindgenPlugin;
+  language: Language;
+  queryConfig: QueryConfig;
   /** Parse returning UTF-8 offsets (for Rust host) */
   parseUtf8: (text: string) => Utf8ParseResult;
   /** Parse returning UTF-16 offsets (for JavaScript public API) */
   parseUtf16: (text: string) => Utf16ParseResult;
+}
+
+/** Create a Parser instance configured for a language */
+function createParserForLanguage(language: Language): Parser {
+  const parser = new Parser();
+  parser.setLanguage(language);
+  return parser;
 }
 
 /** Load a grammar plugin */
@@ -197,67 +230,82 @@ async function loadGrammarPluginInner(
   }
 
   try {
+    // Initialize web-tree-sitter if needed
+    await ensureParserInit(config);
+
     const baseUrl = getGrammarBaseUrl(language, config);
-    const detail =
-      config.resolveJs === defaultConfig.resolveJs ? ` from ${baseUrl}/grammar.js` : "";
-    config.logger.debug(`[arborium] Loading grammar '${language}'${detail}`);
+    config.logger.debug(`[arborium] Loading grammar '${language}' from ${baseUrl}`);
 
-    const module = (await config.resolveJs({
-      language,
-      baseUrl,
-      path: "grammar.js",
-    })) as WasmBindgenPlugin;
-    const wasm = await config.resolveWasm({ language, baseUrl, path: "grammar_bg.wasm" });
+    // Load language WASM and query files in parallel
+    const [wasmResponse, highlightsQuery, injectionsQuery, localsQuery] = await Promise.all([
+      config.resolveWasm({ language, baseUrl, path: "language.wasm" }),
+      config.resolveText({ language, baseUrl, path: "highlights.scm" }),
+      config.resolveText({ language, baseUrl, path: "injections.scm" }),
+      config.resolveText({ language, baseUrl, path: "locals.scm" }),
+    ]);
 
-    // Initialize the WASM module
-    await module.default({ module_or_path: wasm });
-
-    // Verify it loaded correctly
-    const loadedId = module.language_id();
-    if (loadedId !== language) {
-      config.logger.warn(`[arborium] Language ID mismatch: expected '${language}', got '${loadedId}'`);
+    // Load language from WASM bytes
+    let wasmBytes: Uint8Array;
+    if (wasmResponse instanceof Response) {
+      const buffer = await wasmResponse.arrayBuffer();
+      wasmBytes = new Uint8Array(buffer);
+    } else if (wasmResponse instanceof ArrayBuffer) {
+      wasmBytes = new Uint8Array(wasmResponse);
+    } else if (wasmResponse instanceof Uint8Array) {
+      wasmBytes = wasmResponse;
+    } else {
+      throw new Error("Unexpected WASM source type");
     }
 
-    // Get injection languages
-    const injectionLanguages = module.injection_languages();
+    const tsLanguage = await Language.load(wasmBytes);
 
-    // Wrap as GrammarPlugin with session-based parsing
+    // Build combined query
+    const queryConfig = makeQueryConfig(
+      tsLanguage,
+      highlightsQuery,
+      injectionsQuery,
+      localsQuery,
+    );
+
+    // Create plugin with parsing functions
     const plugin: GrammarPlugin = {
       languageId: language,
-      injectionLanguages,
-      module,
-      // UTF-8 parsing for Rust host
+      injectionLanguages: [], // Extracted from injection queries if needed
+      language: tsLanguage,
+      queryConfig,
       parseUtf8: (text: string) => {
-        const session = module.create_session();
+        const parser = createParserForLanguage(tsLanguage);
         try {
-          module.set_text(session, text);
-          const result = module.parse(session);
-          return {
-            spans: result.spans || [],
-            injections: result.injections || [],
-          };
+          const tree = parser.parse(text);
+          if (!tree) return { spans: [], injections: [] };
+          try {
+            return executeQuery(queryConfig, tree, text);
+          } finally {
+            tree.delete();
+          }
         } catch (e) {
           config.logger.error(`[arborium] Parse error:`, e);
           return { spans: [], injections: [] };
         } finally {
-          module.free_session(session);
+          parser.delete();
         }
       },
-      // UTF-16 parsing for JavaScript public API
       parseUtf16: (text: string) => {
-        const session = module.create_session();
+        const parser = createParserForLanguage(tsLanguage);
         try {
-          module.set_text(session, text);
-          const result = module.parse_utf16(session);
-          return {
-            spans: result.spans || [],
-            injections: result.injections || [],
-          };
+          const tree = parser.parse(text);
+          if (!tree) return { spans: [], injections: [] };
+          try {
+            const utf8Result = executeQuery(queryConfig, tree, text);
+            return convertToUtf16(text, utf8Result);
+          } finally {
+            tree.delete();
+          }
         } catch (e) {
           config.logger.error(`[arborium] Parse error:`, e);
           return { spans: [], injections: [] };
         } finally {
-          module.free_session(session);
+          parser.delete();
         }
       },
     };
@@ -328,15 +376,6 @@ function getHostUrl(config: Required<ArboriumConfig>): string {
   return `${baseUrl}/@arborium/arborium${versionSuffix}/dist`;
 }
 
-interface WasmBindgenHost {
-  default: (
-    module_or_path?: { module_or_path: MaybePromise<WbgInitInput> } | undefined,
-    // deprecated: | MaybePromise<WbgInitInput>,
-  ) => Promise<void>;
-  highlight(language: string, source: string): Promise<string>;
-  isLanguageAvailable(language: string): boolean;
-}
-
 /** Load the Rust host module */
 async function loadHost(config: Required<ArboriumConfig>): Promise<HostModule | null> {
   if (hostModule) return hostModule;
@@ -401,8 +440,6 @@ export async function loadGrammar(
   const plugin = await loadGrammarPlugin(language, config);
   if (!plugin) return null;
 
-  const { module } = plugin;
-
   return {
     languageId: () => plugin.languageId,
     injectionLanguages: () => plugin.injectionLanguages,
@@ -413,24 +450,38 @@ export async function loadGrammar(
     // Public API returns UTF-16 offsets for JavaScript compatibility
     parse: (source: string) => plugin.parseUtf16(source),
     createSession: (): Session => {
-      const handle = module.create_session();
+      const parser = createParserForLanguage(plugin.language);
+      let currentTree: Tree | null = null;
+      let currentText = "";
+
       return {
-        setText: (text: string) => module.set_text(handle, text),
+        setText: (text: string) => {
+          currentText = text;
+          const newTree = parser.parse(text, currentTree ?? undefined);
+          if (currentTree) currentTree.delete();
+          currentTree = newTree;
+        },
         // Session.parse() returns UTF-16 offsets for JavaScript compatibility
         parse: () => {
           try {
-            const result = module.parse_utf16(handle);
-            return {
-              spans: result.spans || [],
-              injections: result.injections || [],
-            };
+            if (!currentTree) return { spans: [], injections: [] };
+            const utf8Result = executeQuery(plugin.queryConfig, currentTree, currentText);
+            return convertToUtf16(currentText, utf8Result);
           } catch (e) {
             config.logger.error(`[arborium] Session parse error:`, e);
             return { spans: [], injections: [] };
           }
         },
-        cancel: () => module.cancel(handle),
-        free: () => module.free_session(handle),
+        cancel: () => {
+          // web-tree-sitter doesn't have a cancel API for sync parsing
+        },
+        free: () => {
+          if (currentTree) {
+            currentTree.delete();
+            currentTree = null;
+          }
+          parser.delete();
+        },
       };
     },
     dispose: () => {
@@ -440,78 +491,96 @@ export async function loadGrammar(
 }
 
 /**
- * Register a pre-loaded grammar module, bypassing CDN resolution.
+ * Register a pre-loaded grammar, bypassing CDN resolution.
  *
  * Use this in Node.js, Deno, or other non-browser environments where
  * dynamic `import()` of CDN URLs isn't available.
  *
+ * @param languageWasm - The language WASM bytes (Uint8Array or ArrayBuffer)
+ * @param queries - The query strings for highlighting
+ * @param queries.highlights - The highlights.scm query string
+ * @param queries.injections - The injections.scm query string (optional)
+ * @param queries.locals - The locals.scm query string (optional)
+ *
  * @example
  * ```ts
- * // Deno
- * import * as pythonGrammar from "npm:@arborium/python";
  * import { readFile } from "node:fs/promises";
- * const wasm = await readFile("node_modules/@arborium/python/grammar_bg.wasm");
- * const grammar = await registerGrammar(pythonGrammar, wasm);
+ * const wasm = await readFile("node_modules/@arborium/python/language.wasm");
+ * const highlights = await readFile("node_modules/@arborium/python/highlights.scm", "utf-8");
+ * const grammar = await registerGrammar(wasm, { highlights });
  * const html = await grammar.highlight("print('hello')");
  * ```
  */
 export async function registerGrammar(
-  jsModule: unknown,
-  wasmSource: Response | BufferSource | WebAssembly.Module,
+  languageWasm: Uint8Array | ArrayBuffer,
+  queries: { highlights: string; injections?: string; locals?: string },
   configOverrides?: ArboriumConfig,
 ): Promise<Grammar> {
   const config = getConfig(configOverrides);
-  const module = jsModule as WasmBindgenPlugin;
 
-  await module.default({ module_or_path: wasmSource });
+  // Initialize web-tree-sitter if needed
+  await ensureParserInit(config);
 
-  const language = module.language_id();
-  const injectionLanguages = module.injection_languages();
+  const wasmBytes = languageWasm instanceof Uint8Array
+    ? languageWasm
+    : new Uint8Array(languageWasm);
+  const tsLanguage = await Language.load(wasmBytes);
+  const languageId = tsLanguage.name ?? "unknown";
+
+  const queryConfig = makeQueryConfig(
+    tsLanguage,
+    queries.highlights,
+    queries.injections ?? "",
+    queries.locals ?? "",
+  );
 
   const plugin: GrammarPlugin = {
-    languageId: language,
-    injectionLanguages,
-    module,
+    languageId,
+    injectionLanguages: [],
+    language: tsLanguage,
+    queryConfig,
     parseUtf8: (text: string) => {
-      const session = module.create_session();
+      const parser = createParserForLanguage(tsLanguage);
       try {
-        module.set_text(session, text);
-        const result = module.parse(session);
-        return {
-          spans: result.spans || [],
-          injections: result.injections || [],
-        };
+        const tree = parser.parse(text);
+        if (!tree) return { spans: [], injections: [] };
+        try {
+          return executeQuery(queryConfig, tree, text);
+        } finally {
+          tree.delete();
+        }
       } catch (e) {
         config.logger.error(`[arborium] Parse error:`, e);
         return { spans: [], injections: [] };
       } finally {
-        module.free_session(session);
+        parser.delete();
       }
     },
     parseUtf16: (text: string) => {
-      const session = module.create_session();
+      const parser = createParserForLanguage(tsLanguage);
       try {
-        module.set_text(session, text);
-        const result = module.parse_utf16(session);
-        return {
-          spans: result.spans || [],
-          injections: result.injections || [],
-        };
+        const tree = parser.parse(text);
+        if (!tree) return { spans: [], injections: [] };
+        try {
+          const utf8Result = executeQuery(queryConfig, tree, text);
+          return convertToUtf16(text, utf8Result);
+        } finally {
+          tree.delete();
+        }
       } catch (e) {
         config.logger.error(`[arborium] Parse error:`, e);
         return { spans: [], injections: [] };
       } finally {
-        module.free_session(session);
+        parser.delete();
       }
     },
   };
 
-  grammarCache.set(language, plugin);
-  knownLanguages.add(language);
-  config.logger.debug(`[arborium] Grammar '${language}' registered`);
+  grammarCache.set(languageId, plugin);
+  knownLanguages.add(languageId);
+  config.logger.debug(`[arborium] Grammar '${languageId}' registered`);
 
-  // loadGrammar will find it in the cache and wrap it as a public Grammar
-  const grammar = await loadGrammar(language, configOverrides);
+  const grammar = await loadGrammar(languageId, configOverrides);
   return grammar!;
 }
 

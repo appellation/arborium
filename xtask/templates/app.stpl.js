@@ -106,7 +106,6 @@ async function loadGrammarPlugin(langId) {
     }
 
     // Determine paths based on dev mode
-    const jsPath = registry.dev_mode ? entry.local_js : entry.cdn_js;
     const wasmPath = registry.dev_mode ? entry.local_wasm : entry.cdn_wasm;
 
     try {
