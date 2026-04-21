@@ -1,0 +1,14 @@
+[build]
+target = "wasm32-unknown-emscripten"
+
+[unstable]
+build-std = ["core", "alloc"]
+
+[target.wasm32-unknown-emscripten]
+rustflags = [
+    "-C", "relocation-model=pic",
+    "-C", "link-arg=-sSIDE_MODULE=2",
+    "-C", "link-arg=-sEXPORTED_FUNCTIONS=_try_ts",
+    "-C", "link-arg=-fPIC",
+    "-C", "link-arg=-O2",
+]

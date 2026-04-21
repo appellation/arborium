@@ -60,27 +60,60 @@ tree-sitter runtime code lives exactly once, in the main module.
    `ts_parser_new_wasm` (a JS-bridge variant) is. Adding plain names is a
    one-line change.
 
-## Next step (step 2 of the plan)
+## Step 2: Rust side module also works
 
-Repeat this exercise with Rust: compile a trivial crate targeting
-`wasm32-unknown-emscripten`, producing a `SIDE_MODULE=2` output, with one
-`extern "C"` call to `ts_parser_new`. Confirm:
-- `rustup target add wasm32-unknown-emscripten` + nightly `-Zbuild-std`
-  produce a PIC side module.
-- Rust's C-ABI declarations resolve against the host the same way hello.c's
-  did.
-- No `panic_unwind` or similar machinery sneaks in and blocks loading.
+A `no_std` Rust crate compiled to `wasm32-unknown-emscripten` and linked as
+`SIDE_MODULE=2` produces a **byte-identical** 176-byte wasm to the C version
+(`diff hello.wasm hello-rs.wasm` = no output). The harness returns the same
+parser pointer (0x131a8). Rust's `extern "C"` declarations resolve against
+the host exactly like C's.
 
-The real content lives in step 3 (porting `arborium-plugin-runtime`). Step 2
-is the smallest possible Rust-specific proof so we can keep the variables
-separated.
+```
+$ node harness.mjs hello-rs.wasm
+loading side module: hello-rs.wasm
+side module exports: [ '__wasm_call_ctors', 'try_ts' ]
+try_ts() returned: 78248 (type: number )
+OK: cross-module symbol resolution works
+```
+
+Key findings from step 2:
+
+- **No rustup needed.** The nix-provided nightly rustc is used directly;
+  `-Zbuild-std=["core", "alloc"]` (in `side-rs/.cargo/config.toml`) builds
+  core/alloc from the `rust-src` component for the emscripten target without
+  needing a precompiled std tarball.
+- **Native emcc needed** (emsdk 4.0.15 at `/home/discord/.emsdk`). The Rust
+  emscripten target invokes emcc as the linker; the docker-in-a-loop trick
+  used for the C build isn't viable for Rust because rustc passes many
+  host-path arguments to the linker.
+- **`-C relocation-model=pic` + `-C link-arg=-sSIDE_MODULE=2`** are
+  sufficient linker flags. No `panic_unwind`, no `libstd` leakage, no
+  unexpected imports.
+- **Bigger crates may reveal more friction.** This spike is 3 extern calls
+  and 1 export; `compiler-builtins` and `alloc` built cleanly, but real
+  arborium code will pull in `std`, wasm-bindgen alternatives, etc.
+  That's step 3.
+
+## Next (step 3)
+
+Port `arborium-plugin-runtime` to `wasm32-unknown-emscripten` as a
+SIDE_MODULE. This is the big one — it's where we strip the tree-sitter C
+runtime out of the crate (fork's `arborium-tree-sitter` build.rs currently
+compiles `src/lib.c` into every consumer), stop pulling wasm-bindgen, and
+start writing emscripten-style exports. Expect real debugging.
 
 ## Reproducing
 
 ```
-./build-host.sh   # ~1 min first time (caches emscripten sysroot), <10s after
-./build-side.sh   # <5s
-node harness.mjs
+./build-host.sh        # emcc via docker, ~1 min cold, <10s warm
+./build-side.sh        # C side module via docker
+./build-side-rs.sh     # Rust side module via native emsdk
+node harness.mjs              # loads hello.wasm (C)
+node harness.mjs hello-rs.wasm # loads the Rust version
 ```
 
-Prerequisites: docker + node. No local emscripten install needed.
+Prerequisites:
+- docker (for the host + C side module builds)
+- node (v22+)
+- **For the Rust side module only:** native emsdk at `/home/discord/.emsdk`.
+  Install with `git clone https://github.com/emscripten-core/emsdk && cd emsdk && ./emsdk install 4.0.15 && ./emsdk activate 4.0.15`.

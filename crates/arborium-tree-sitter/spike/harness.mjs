@@ -13,7 +13,10 @@ const outDir = resolve(here, 'out');
 const { default: MainModuleFactory } = await import(resolve(outDir, 'web-tree-sitter.mjs'));
 const Module = await MainModuleFactory();
 
-const sideBytes = await readFile(resolve(outDir, 'hello.wasm'));
+// Pass a filename arg to pick which side module to load. Default: the C one.
+const which = process.argv[2] ?? 'hello.wasm';
+const sideBytes = await readFile(resolve(outDir, which));
+console.log(`loading side module: ${which}`);
 const exports = await Module.loadWebAssemblyModule(sideBytes, { loadAsync: true });
 
 console.log('side module exports:', Object.keys(exports));
