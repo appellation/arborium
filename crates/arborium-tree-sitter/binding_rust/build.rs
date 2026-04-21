@@ -4,6 +4,24 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let target = env::var("TARGET").unwrap();
 
+    // On wasm32-unknown-emscripten the crate is consumed by an emscripten
+    // SIDE_MODULE build; `ts_*` symbols are resolved at runtime by the
+    // MAIN_MODULE (web-tree-sitter). Skip the static cc::Build step so we
+    // don't ship duplicate tree-sitter code, but still copy
+    // stdlib-symbols.txt into OUT_DIR (binding_rust/lib.rs `include_str!`s
+    // it unconditionally) and emit cargo:include for
+    // DEP_TREE_SITTER_INCLUDE consumers.
+    if target == "wasm32-unknown-emscripten" {
+        let manifest_path = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+        fs::copy(
+            "src/wasm/stdlib-symbols.txt",
+            out_dir.join("stdlib-symbols.txt"),
+        )
+        .unwrap();
+        println!("cargo:include={}", manifest_path.join("include").display());
+        return;
+    }
+
     #[cfg(feature = "bindgen")]
     generate_bindings(&out_dir);
 
