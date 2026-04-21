@@ -4,6 +4,22 @@ fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let target = env::var("TARGET").unwrap();
 
+    // On wasm32-unknown-emscripten the plugin runs as a SIDE_MODULE loaded
+    // into web-tree-sitter's MAIN_MODULE=2 wasm; the dynamic linker
+    // resolves `ts_*` symbols at load time, so we must NOT statically
+    // compile `src/lib.c` here. Still emit cargo:include and copy
+    // stdlib-symbols.txt so consumers that `include_str!` it keep working.
+    if target == "wasm32-unknown-emscripten" {
+        let manifest_path = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+        fs::copy(
+            "src/wasm/stdlib-symbols.txt",
+            out_dir.join("stdlib-symbols.txt"),
+        )
+        .unwrap();
+        println!("cargo:include={}", manifest_path.join("include").display());
+        return;
+    }
+
     #[cfg(feature = "bindgen")]
     generate_bindings(&out_dir);
 

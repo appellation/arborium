@@ -20,9 +20,15 @@ EXPORTS="$(cat "$ROOT/src/wasm/stdlib-symbols.txt" "$ROOT/binding_web/lib/export
   | sed 's/,$//')"
 
 # Extra exports for the spike (not added to exports.txt so the fork stays
-# untouched). ts_parser_new is needed so our side module can allocate a parser
-# and prove symbol resolution works end-to-end.
+# untouched). These are the plain (non-_wasm-suffixed) tree-sitter C symbols
+# the Rust wrappers in arborium-tree-sitter call. Discovered empirically by
+# compiling the side modules and scanning their imports.
 EXPORTS="${EXPORTS},_ts_parser_new"
+EXPORTS="${EXPORTS},_ts_parser_logger"
+EXPORTS="${EXPORTS},_ts_parser_print_dot_graphs"
+EXPORTS="${EXPORTS},_ts_parser_set_logger"
+EXPORTS="${EXPORTS},_ts_query_cursor_new"
+EXPORTS="${EXPORTS},_ts_query_cursor_delete"
 
 # Run emcc inside the upstream-pinned emscripten image, working in $ROOT.
 docker run --rm \

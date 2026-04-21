@@ -8,9 +8,12 @@ fn main() {
     // Emit metadata that dependent crates can access via DEP_ARBORIUM_SYSROOT_PATH
     println!("cargo::metadata=PATH={}", wasm_sysroot.display());
 
-    // For WASM targets, compile the allocator C code
+    // For WASM targets, compile the allocator C code.
+    // Skip on wasm32-unknown-emscripten: emcc provides its own libc (malloc,
+    // free, ...) and compiling these sources would produce duplicate-symbol
+    // link errors.
     let target = std::env::var("TARGET").unwrap_or_default();
-    if target.contains("wasm") {
+    if target.contains("wasm") && target != "wasm32-unknown-emscripten" {
         // Compile the C source files that provide the missing symbols
         let mut build = cc::Build::new();
 
