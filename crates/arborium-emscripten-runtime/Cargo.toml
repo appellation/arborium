@@ -1,0 +1,29 @@
+[package]
+name = "arborium-emscripten-runtime"
+version = "0.0.0-test"
+edition = "2024"
+description = "Shared arborium plugin runtime packaged as an emscripten SIDE_MODULE"
+license = "MIT"
+repository = "https://github.com/bearcove/arborium"
+readme = "README.md"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+arborium-plugin-runtime = { version = "0.0.0-test", path = "../arborium-plugin-runtime" }
+arborium-tree-sitter    = { version = "0.0.0-test", path = "../arborium-tree-sitter" }
+arborium-wire           = { version = "0.0.0-test", path = "../arborium-wire" }
+serde_json              = { version = "1.0", default-features = false, features = ["std"] }
+
+[profile.release]
+opt-level = "z"
+lto = false
+codegen-units = 1
+panic = "abort"
+strip = false
+
+# Self-contained; don't try to inherit from any parent workspace (arborium has
+# per-crate standalone Cargo.toml files; this crate follows the same pattern).
+[workspace]
