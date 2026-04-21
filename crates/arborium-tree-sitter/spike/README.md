@@ -171,16 +171,80 @@ in `build-host.sh`.
   still perform the `fs::copy` that puts the file there, even though no
   other build.rs work runs.
 
-## Next (step 4)
+## Step 4: end-to-end parse with a real grammar
 
-Wire in a real grammar. Pick something small (JSON, TOML) and:
+Three-module dance:
 
-1. Compile its `parser.c` + `scanner.c` as a third `SIDE_MODULE=2` so
-   web-tree-sitter's existing grammar loader can consume it.
-2. Extend the probe (or create a new one) that obtains the grammar's
-   `TSLanguage *` from web-tree-sitter, feeds it to `Parser::set_language`,
-   parses a string, walks the resulting tree.
-3. Compare vs. the existing `arborium-python` plugin size as a baseline.
+| Module | Role | Size |
+|---|---|---|
+| `web-tree-sitter.wasm` | MAIN_MODULE, tree-sitter C runtime | 195 KB |
+| `tree-sitter-json.wasm` | SIDE_MODULE, grammar (just `parser.c` compiled standalone) | **6.7 KB** |
+| `runtime-probe.wasm` | SIDE_MODULE, Rust wrappers + plugin-runtime | 56 KB |
+
+```
+$ node harness-parse.mjs
+tree_sitter_json() returned: 81136
+try_parse("[1, 2, 3]") -> named_child_count = 1
+OK: end-to-end parse via dynamically-linked tree-sitter works
+```
+
+The probe accepts a `*const TSLanguage` obtained from the grammar module's
+exported `tree_sitter_json()`, drives `Parser::set_language` + `Parser::parse`
+via arborium's Rust wrappers, and walks `tree.root_node().named_child_count()`.
+All tree-sitter symbol calls (14 distinct `ts_*`) resolve dynamically at
+`loadWebAssemblyModule` time against web-tree-sitter.
+
+### Grammar side module
+
+```
+spike/build-grammar.sh
+```
+
+Compiles `langs/group-acorn/json/crate/grammar/src/parser.c` with:
+
+```
+emcc -O2 -fPIC -std=c11 -sSIDE_MODULE=2 \
+     -sEXPORTED_FUNCTIONS=_tree_sitter_json \
+     -I src -o tree-sitter-json.wasm src/parser.c
+```
+
+Emits 6.7 KB. Compare that to the current arborium build's per-plugin wasm
+size (100–500 KB), which bundles tree-sitter C + `arborium-plugin-runtime`
++ wasm-bindgen glue into every grammar. **~95% size reduction per grammar**
+is the first-order payoff of this architecture at the grammar layer.
+
+### Shared-memory interop
+
+Because emscripten dynamic linking uses a single shared WASM linear memory
+across MAIN_MODULE + all SIDE_MODULEs, pointers passed between modules are
+plain integers into that common heap. The harness allocates a text buffer
+with `Module._malloc` (web-tree-sitter's export), writes into `Module.HEAPU8`,
+and hands the pointer to `probe.try_parse`. No marshalling, no copies.
+
+### `ts_*` symbol count so far
+
+Now 14 plain symbols discovered (was 7 in step 3). Added this step:
+`ts_language_abi_version`, `ts_language_delete`, `ts_node_named_child_count`,
+`ts_parser_parse_with_options`, `ts_tree_root_node`. As the probe exercises
+more API surface (queries, edits, cursors, predicates), expect this to grow
+to 30–50 for a realistic highlighter. Long-term these plain names should
+migrate into `binding_web/lib/exports.txt` rather than stay in `build-host.sh`.
+
+## Next (step 5)
+
+Cross the remaining architectural bridges to reach a replacement for the
+current plugin pipeline:
+
+1. Query execution path — load `highlights.scm`, run `QueryCursor::matches`,
+   walk `QueryMatch` captures. This will exercise another big slice of the
+   `ts_query_*` and `ts_node_*` surface.
+2. Replace wasm-bindgen at the plugin's JS boundary. Either hand-rolled
+   C-ABI exports matching the current `WasmBindgenPlugin` interface
+   (`langs/*/npm/src/lib.rs:30-95`) or a shim crate that JSON-encodes
+   `Utf8ParseResult` into shared memory.
+3. Integrate with the existing `loader.ts` — instead of `import()`-ing a
+   per-grammar JS module, maintain one web-tree-sitter Module instance
+   and `loadWebAssemblyModule` grammars and the runtime into it.
 
 ## Reproducing
 
@@ -189,9 +253,11 @@ Wire in a real grammar. Pick something small (JSON, TOML) and:
 ./build-side.sh              # C side module via docker
 ./build-side-rs.sh           # Rust side module via native emsdk
 ./build-side-probe.sh        # plugin-runtime side module
+./build-grammar.sh           # JSON grammar side module
 node harness.mjs                    # C side module
 node harness.mjs hello-rs.wasm      # Rust side module
 node harness.mjs runtime-probe.wasm # plugin-runtime side module
+node harness-parse.mjs              # end-to-end parse across all three
 ```
 
 Prerequisites:

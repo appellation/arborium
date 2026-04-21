@@ -29,6 +29,12 @@ EXPORTS="${EXPORTS},_ts_parser_print_dot_graphs"
 EXPORTS="${EXPORTS},_ts_parser_set_logger"
 EXPORTS="${EXPORTS},_ts_query_cursor_new"
 EXPORTS="${EXPORTS},_ts_query_cursor_delete"
+# Added for end-to-end parse (step 4):
+EXPORTS="${EXPORTS},_ts_language_abi_version"
+EXPORTS="${EXPORTS},_ts_language_delete"
+EXPORTS="${EXPORTS},_ts_node_named_child_count"
+EXPORTS="${EXPORTS},_ts_parser_parse_with_options"
+EXPORTS="${EXPORTS},_ts_tree_root_node"
 
 # Run emcc inside the upstream-pinned emscripten image, working in $ROOT.
 docker run --rm \

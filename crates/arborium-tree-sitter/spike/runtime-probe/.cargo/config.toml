@@ -8,7 +8,7 @@ build-std = ["std", "panic_abort"]
 rustflags = [
     "-C", "relocation-model=pic",
     "-C", "link-arg=-sSIDE_MODULE=2",
-    "-C", "link-arg=-sEXPORTED_FUNCTIONS=_try_ts",
+    "-C", "link-arg=-sEXPORTED_FUNCTIONS=_try_ts,_try_parse",
     "-C", "link-arg=-fPIC",
     "-C", "link-arg=-O2",
 ]
